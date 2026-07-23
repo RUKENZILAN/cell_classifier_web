@@ -1,189 +1,189 @@
 # Agentic Cell Culture Classifier
 
-Hücre kültürü görüntülerini farklı büyütme seviyelerinde (x5, x20, …) sınıflandıran ve **hangi büyütme seviyesinin daha iyi sonuç verdiğine otonom karar veren** çok ajanlı (multi-agent) bir görüntü sınıflandırma sistemi. Hem komut satırından hem de bir Flask tabanlı web arayüzünden çalıştırılabilir.
+A multi-agent image classification system that classifies cell culture images across different magnification levels (x5, x20, …) and **autonomously decides which magnification level performs best**. Can be run both from the command line and through a Flask-based web interface.
 
-## İçindekiler
+## Table of Contents
 
-- [Genel Bakış](#genel-bakış)
-- [Mimari](#mimari)
-- [Kurulum](#kurulum)
-- [Veri Klasör Yapısı](#veri-klasör-yapısı)
-- [Kullanım](#kullanım)
-  - [Web arayüzü](#web-arayüzü)
-  - [Komut satırı](#komut-satırı)
-- [Yapılandırma Parametreleri](#yapılandırma-parametreleri)
-- [Dummy vs. Gerçek Backbone](#dummy-vs-gerçek-backbone)
-- [Çıktılar](#çıktılar)
-- [Web API Uç Noktaları](#web-api-uç-noktaları)
-- [Örnek Veri Üretimi](#örnek-veri-üretimi)
-- [Sorun Giderme](#sorun-giderme)
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Data Folder Structure](#data-folder-structure)
+- [Usage](#usage)
+  - [Web interface](#web-interface)
+  - [Command line](#command-line)
+- [Configuration Parameters](#configuration-parameters)
+- [Dummy vs. Real Backbone](#dummy-vs-real-backbone)
+- [Outputs](#outputs)
+- [Web API Endpoints](#web-api-endpoints)
+- [Generating Sample Data](#generating-sample-data)
+- [Troubleshooting](#troubleshooting)
 
-## Genel Bakış
+## Overview
 
-Sistem, her biri belirli bir sorumluluğu olan ajanlardan oluşur (Central Memory üzerinden haberleşirler):
+The system is composed of several agents, each with a specific responsibility, communicating through a shared Central Memory:
 
-1. Görüntüleri okur, boyutlandırır, normalize eder ve train/test setlerine böler.
-2. Önceden eğitilmiş bir CNN (ResNet-50 / VGG-16) veya hızlı bir "dummy" çıkarıcı ile öznitelik (feature) çıkarır.
-3. K-En Yakın Komşu (KNN) ile sınıflandırma yapar, metrikleri (accuracy, F1, confusion matrix, per-class sonuçlar) hesaplar.
-4. İsteğe bağlı k-fold cross-validation ile güven aralıklarını daraltır.
-5. Büyütme seviyeleri arasında karşılaştırma yaparak en iyi performans gösteren büyütmeye otonom karar verir ve bir final rapor (`final_report.md`) üretir.
+1. Reads images, resizes and normalizes them, and splits them into train/test sets.
+2. Extracts features using either a pretrained CNN (ResNet-50 / VGG-16) or a fast "dummy" extractor.
+3. Classifies with K-Nearest Neighbors (KNN) and computes metrics (accuracy, F1, confusion matrix, per-class results).
+4. Optionally narrows confidence intervals using k-fold cross-validation.
+5. Compares magnification levels against each other and autonomously decides which one performs best, producing a final report (`final_report.md`).
 
-## Mimari
+## Architecture
 
 ```
-CentralAgent (orkestratör)
- ├── IntakerAgent       → veri okuma, boyutlandırma, train/test bölme
- ├── AnalyzerAgent      → öznitelik çıkarma + KNN sınıflandırma + metrikler
- └── DecisionMakerAgent → büyütmeler arası karşılaştırma ve karar
+CentralAgent (orchestrator)
+ ├── IntakerAgent       → reads data, resizes, splits into train/test
+ ├── AnalyzerAgent      → feature extraction + KNN classification + metrics
+ └── DecisionMakerAgent → cross-magnification comparison and decision
 
-CentralMemory  → tüm ajanların okuyup yazdığı thread-safe ortak durum (loglar, hatalar, metrikler, sonuçlar)
+CentralMemory  → thread-safe shared state read/written by all agents (logs, errors, metrics, results)
 ```
 
-Tüm çekirdek mantık **tek dosyada** toplanmıştır: `agentic_cell_classifier.py`. `app.py` bu dosyayı import ederek üzerine bir Flask web arayüzü ve REST API'si ekler.
+All core logic lives in a **single file**: `agentic_cell_classifier.py`. `app.py` imports this file and adds a Flask web interface and REST API on top of it.
 
-## Kurulum
+## Installation
 
 ```bash
-# Temel bağımlılıklar
+# Core dependencies
 pip install flask numpy scikit-learn pillow
 
-# Gerçek CNN backbone'ları (ResNet-50 / VGG-16) için — opsiyonel ama önerilir
+# Real CNN backbones (ResNet-50 / VGG-16) — optional but recommended
 pip install torch torchvision
 ```
 
-> torch/torchvision kurmak istemiyorsanız, sistemi **dummy** öznitelik çıkarıcı ile de deneyebilirsiniz (bkz. [Dummy vs. Gerçek Backbone](#dummy-vs-gerçek-backbone)). Bu, mekanizmayı hızlıca test etmek için uygundur ama gerçek sınıflandırma performansını yansıtmaz.
+> If you don't want to install torch/torchvision, you can still try the system with the **dummy** feature extractor (see [Dummy vs. Real Backbone](#dummy-vs-real-backbone)). This is useful for quickly testing the mechanism, but it does not reflect real classification performance.
 
-## Veri Klasör Yapısı
+## Data Folder Structure
 
-Veri klasörünüz aşağıdaki gibi düzenlenmelidir — her büyütme seviyesi için bir alt klasör, her sınıf için de onun altında bir alt klasör:
+Your data folder should be organized as follows — one subfolder per magnification level, and under each of those, one subfolder per class:
 
 ```
 data/
   x5/
-    Saglikli_Hucre/*.jpg
-    Hastalikli_Hucre/*.jpg
+    Healthy_Cell/*.jpg
+    Diseased_Cell/*.jpg
   x20/
-    Saglikli_Hucre/*.jpg
-    Hastalikli_Hucre/*.jpg
+    Healthy_Cell/*.jpg
+    Diseased_Cell/*.jpg
 ```
 
-Desteklenen dosya uzantıları: `.png .jpg .jpeg .tif .tiff .bmp`
+Supported file extensions: `.png .jpg .jpeg .tif .tiff .bmp`
 
-Kendi verinize hızlı bir alternatif olarak, sentetik/deneme verisi üretmek için `generate_sample_data.py` betiğini kullanabilirsiniz (bkz. [Örnek Veri Üretimi](#örnek-veri-üretimi)).
+If you don't have your own data yet, you can generate a synthetic test dataset using the `generate_sample_data.py` script (see [Generating Sample Data](#generating-sample-data)).
 
-## Kullanım
+## Usage
 
-### Web arayüzü
+### Web interface
 
 ```bash
 python app.py
-# Tarayıcıda açın: http://127.0.0.1:5000
+# Open in browser: http://127.0.0.1:5000
 ```
 
-Arayüzden:
+From the interface:
 
-1. **1. Select Data** — `data/` klasörünüzü seçin (yerel dosya seçici ile) veya sunucudaki bir yolu doğrudan yazın.
-2. **2. Configure** — büyütme seviyeleri, backbone, KNN k değeri, test oranı, çıktı klasörü ve cross-validation fold sayısını ayarlayın.
-3. **▶ Run Pipeline** — çalıştırın; canlı loglar, metrikler, confusion matrix, sınıf bazlı sonuçlar, yanlış sınıflandırılan örnekler ve final rapor arayüzde anlık olarak güncellenir.
-4. Sonuçları PNG/CSV/JSON/Markdown olarak dışa aktarabilir veya tüm görselleri tek bir ZIP olarak indirebilirsiniz.
+1. **1. Select Data** — pick your `data/` folder (via the local file picker) or type a server-side path directly.
+2. **2. Configure** — set magnification levels, backbone, KNN k value, test size, output folder, and cross-validation fold count.
+3. **▶ Run Pipeline** — run it; live logs, metrics, confusion matrix, per-class results, misclassified examples, and the final report update in real time in the interface.
+4. Export results as PNG/CSV/JSON/Markdown, or download all visuals as a single ZIP.
 
-### Komut satırı
+### Command line
 
-**İnteraktif mod:**
+**Interactive mode:**
 ```bash
 python agentic_cell_classifier.py
 ```
-Sizden veri klasörünü ve torch/torchvision'ın kurulu olup olmadığını soracaktır.
+You'll be asked for the data folder and whether torch/torchvision is installed.
 
-**Doğrudan parametrelerle:**
+**With direct parameters:**
 ```bash
 python agentic_cell_classifier.py --data-dir ./data --magnifications x5 x20 --backbone resnet50
 ```
 
-Dummy (torch gerektirmeyen) modda çalıştırmak için:
+To run in dummy (no-torch) mode:
 ```bash
 python agentic_cell_classifier.py --data-dir ./data --dummy
 ```
 
-## Yapılandırma Parametreleri
+## Configuration Parameters
 
-| Parametre | Açıklama | Varsayılan |
+| Parameter | Description | Default |
 |---|---|---|
-| `data_dir` | Veri klasörü yolu | — (zorunlu) |
-| `magnifications` | Karşılaştırılacak büyütme seviyeleri | `["x5", "x20"]` |
+| `data_dir` | Data folder path | — (required) |
+| `magnifications` | Magnification levels to compare | `["x5", "x20"]` |
 | `backbone` | `resnet50` \| `vgg16` \| `dummy` | `resnet50` |
-| `use_dummy_extractor` | torch olmadan hızlı test modu | `False` |
-| `knn_neighbors` | KNN komşu sayısı (k) | `5` |
-| `knn_metric` | KNN mesafe metriği | `cosine` |
-| `test_size` | Test setinin oranı (0–1 arası) | `0.2` |
-| `cv_folds` | K-fold cross-validation fold sayısı (0 = kapalı) | `0` |
-| `output_dir` | Rapor ve çıktıların yazılacağı klasör | `./outputs` |
-| `random_state` | Tekrarlanabilirlik için sabit tohum | `42` |
-| `max_misclassified_examples` | Galeri başına gösterilecek maksimum yanlış örnek | `8` |
+| `use_dummy_extractor` | Fast test mode without torch | `False` |
+| `knn_neighbors` | Number of KNN neighbors (k) | `5` |
+| `knn_metric` | KNN distance metric | `cosine` |
+| `test_size` | Test set fraction (between 0–1) | `0.2` |
+| `cv_folds` | Number of k-fold cross-validation folds (0 = disabled) | `0` |
+| `output_dir` | Folder where reports and outputs are written | `./outputs` |
+| `random_state` | Fixed seed for reproducibility | `42` |
+| `max_misclassified_examples` | Max misclassified examples shown per gallery | `8` |
 
-> **İstatistiksel not:** Küçük test setlerinde (sınıf başına ~20–30 örnek) güven aralıkları büyütmeler arasında örtüşebilir. Daha güvenilir bir karşılaştırma için `cv_folds` değerini 5 veya 10 yaparak k-fold cross-validation kullanmanız önerilir; bu, ek veri toplamadan aynı veri setiyle daha dar güven aralıkları elde etmenizi sağlar.
+> **Statistical note:** With small test sets (roughly 20–30 examples per class), confidence intervals can overlap between magnifications. For a more reliable comparison, set `cv_folds` to 5 or 10 to use k-fold cross-validation — this narrows confidence intervals using the same dataset, without collecting additional data.
 
-## Dummy vs. Gerçek Backbone
+## Dummy vs. Real Backbone
 
 | | **Dummy** | **ResNet-50 / VGG-16** |
 |---|---|---|
-| Bağımlılık | Sadece numpy | torch + torchvision |
-| Öznitelikler | Piksel kanal ortalaması/std'si + histogram | ImageNet üzerinde önceden eğitilmiş derin CNN öznitelikleri |
-| Hız | Çok hızlı | Yavaş (CPU) / hızlı (GPU) |
-| Kullanım amacı | Mekanizmayı test etmek, geliştirme | Gerçek sınıflandırma performansı |
-| Doğruluk | Gerçek performansı yansıtmaz | Gerçek performansı yansıtır |
+| Dependency | numpy only | torch + torchvision |
+| Features | Pixel channel mean/std + histogram | Deep CNN features pretrained on ImageNet |
+| Speed | Very fast | Slow (CPU) / fast (GPU) |
+| Purpose | Testing the mechanism, development | Real classification performance |
+| Accuracy | Does not reflect real performance | Reflects real performance |
 
-Gerçek bir backbone'a geçmek için:
+To switch to a real backbone:
 1. `pip install torch torchvision`
-2. Web arayüzünde **"Force dummy extractor"** kutusunun işaretini kaldırın ve **Backbone** olarak `ResNet-50` veya `VGG-16` seçin.
-3. CLI'da `--backbone resnet50` (veya `vgg16`) kullanın ve `--dummy` bayrağını **eklemeyin**.
+2. In the web interface, uncheck **"Force dummy extractor"** and select `ResNet-50` or `VGG-16` as the **Backbone**.
+3. In the CLI, use `--backbone resnet50` (or `vgg16`) and **do not** add the `--dummy` flag.
 
-İlk çalıştırmada ImageNet ön-eğitimli ağırlıklar internetten indirilir (birkaç yüz MB); sonraki çalıştırmalarda yerel önbellekten (`~/.cache/torch`) okunur.
+On first run, pretrained ImageNet weights are downloaded from the internet (a few hundred MB); subsequent runs read from the local cache (`~/.cache/torch`).
 
-## Çıktılar
+## Outputs
 
-Belirtilen `output_dir` içine (varsayılan `./outputs`):
+Written to the specified `output_dir` (default `./outputs`):
 
-- `final_report.md` — okunabilir özet rapor (metrikler, karar, gerekçe)
-- `run_memory.json` — çalışmanın tam durum kaydı (loglar, hatalar, ham metrikler)
-- Confusion matrix, accuracy/F1 grafikleri ve yanlış sınıflandırılan örnek galerileri (web arayüzünden PNG/ZIP olarak indirilebilir)
+- `final_report.md` — a readable summary report (metrics, decision, rationale)
+- `run_memory.json` — the full state record of the run (logs, errors, raw metrics)
+- Confusion matrices, accuracy/F1 charts, and misclassified example galleries (downloadable as PNG/ZIP from the web interface)
 
-## Web API Uç Noktaları
+## Web API Endpoints
 
-| Uç nokta | Metod | Açıklama |
+| Endpoint | Method | Description |
 |---|---|---|
-| `/` | GET | Web arayüzü |
-| `/api/upload` | POST | Yerel klasör yükleme |
-| `/api/run` | POST | Pipeline'ı başlatır |
-| `/api/logs` | GET | Canlı log akışı (SSE) |
-| `/api/status` | GET | Mevcut çalışma durumu |
-| `/api/cancel` | POST | Çalışan işi iptal eder |
-| `/api/resolve-output` | POST | Çıktı klasörü yolunu çözümler |
-| `/api/export/zip` | GET | Tüm görselleri ZIP olarak indirir |
-| `/api/export/metrics.csv` | GET | Metrikleri CSV olarak indirir |
-| `/api/export/results.json` | GET | Sonuçları JSON olarak indirir |
-| `/api/export/report.md` | GET | Final raporu Markdown olarak indirir |
-| `/api/reset` | POST | Arayüzü ve durumu sıfırlar |
+| `/` | GET | Web interface |
+| `/api/upload` | POST | Upload a local folder |
+| `/api/run` | POST | Starts the pipeline |
+| `/api/logs` | GET | Live log stream (SSE) |
+| `/api/status` | GET | Current run status |
+| `/api/cancel` | POST | Cancels the running job |
+| `/api/resolve-output` | POST | Resolves the output folder path |
+| `/api/export/zip` | GET | Downloads all visuals as a ZIP |
+| `/api/export/metrics.csv` | GET | Downloads metrics as CSV |
+| `/api/export/results.json` | GET | Downloads results as JSON |
+| `/api/export/report.md` | GET | Downloads the final report as Markdown |
+| `/api/reset` | POST | Resets the interface and state |
 
-## Örnek Veri Üretimi
+## Generating Sample Data
 
-Kendi veriniz yoksa, arayüzü/pipeline'ı denemek için küçük bir sentetik veri seti oluşturabilirsiniz:
+If you don't have your own data, you can generate a small synthetic dataset to try out the interface/pipeline:
 
 ```bash
 python generate_sample_data.py
 ```
 
-Bu, `./data/x5/` ve `./data/x20/` altında `class_a` / `class_b` klasörlerinde, sınıf başına 12 sentetik görüntü (renkli daireler) üretir.
+This creates 12 synthetic images per class (colored circles) under `./data/x5/` and `./data/x20/`, in `class_a` / `class_b` subfolders.
 
-## Sorun Giderme
+## Troubleshooting
 
-| Sorun | Olası neden / çözüm |
+| Issue | Likely cause / fix |
 |---|---|
-| "Choose a folder" veya tema (dark/light) düğmesi tıklanmıyor | `index.html` içinde JS başlatma hatası olabilir; sayfayı yeniden yükleyin, tarayıcı konsolunda hata olup olmadığını kontrol edin. |
-| `ModuleNotFoundError: torch` | `pip install torch torchvision` çalıştırın veya `use_dummy` / `--dummy` seçeneğini kullanın. |
-| Güven aralıkları örtüşüyor | `cv_folds` ≥ 5 ile cross-validation kullanın veya test setini büyütün (bkz. Yapılandırma Parametreleri notu). |
-| Yükleme sırasında büyük klasörlerde zaman aşımı | Sunucu tarafı yol (`data_dir`) kullanarak yükleme adımını atlayın. |
+| "Choose a folder" or the dark/light theme button isn't clickable | There may be a JS initialization error in `index.html`; reload the page and check the browser console for errors. |
+| `ModuleNotFoundError: torch` | Run `pip install torch torchvision`, or use the `use_dummy` / `--dummy` option. |
+| Confidence intervals overlap | Use cross-validation with `cv_folds` ≥ 5, or increase the test set size (see the note under Configuration Parameters). |
+| Timeout when uploading large folders | Use a server-side path (`data_dir`) to skip the upload step. |
 
 ---
 
-*Bu proje eğitim/araştırma amaçlı bir referans uygulamadır; klinik teşhis için kullanılmamalıdır.*
+*This project is an educational/research reference implementation; it should not be used for clinical diagnosis.*
